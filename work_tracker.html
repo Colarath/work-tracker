@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Work Hour Tracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <style>
+        body { background-color: #f0f2f5; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .main-container { max-width: 800px; margin: 30px auto; }
+        .card { border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); border: none; margin-bottom: 20px; }
+        .balance-display { font-size: 2.5rem; font-weight: 700; }
+        .text-credit { color: #198754; }
+        .text-debt { color: #dc3545; }
+        .loading-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255,255,255,0.8); z-index: 9999; display: none;
+            justify-content: center; align-items: center;
+        }
+        .unsaved-dot {
+            height: 10px; width: 10px; background-color: #dc3545; border-radius: 50%;
+            display: inline-block; margin-left: 5px; opacity: 0; transition: opacity 0.3s;
+        }
+        .show-unsaved { opacity: 1; }
+    </style>
+</head>
+<body>
+
+<div id="loader" class="loading-overlay">
+    <div class="spinner-border text-primary" role="status">
+        <span class="visually-hidden">Loading...</span>
+    </div>
+</div>
+
+<div class="container main-container">
+    
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h3 class="m-0"><i class="fas fa-clock text-primary"></i> Work Tracker</h3>
+        <button class="btn btn-outline-secondary btn-sm" onclick="openSettings()">
+            <i class="fas fa-cog"></i> Settings
+        </button>
+    </div>
+
+    <div class="card p-3 mb-3">
+        <div class="d-flex gap-2 justify-content-between align-items-center">
+            <div class="text-muted small">
+                <i class="fas fa-info-circle"></i> Sync manually to save API requests.
+                <span id="unsavedIndicator" class="badge bg-warning text-dark ms-2" style="opacity: 0;">Unsaved Changes</span>
+            </div>
+            <div>
+                <button class="btn btn-outline-primary btn-sm" onclick="fetchData()">
+                    <i class="fas fa-cloud-download-alt"></i> Load
+                </button>
+                <button class="btn btn-primary btn-sm" onclick="syncData()">
+                    <i class="fas fa-cloud-upload-alt"></i> Save <span id="saveDot" class="unsaved-dot"></span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="card text-center p-4">
+        <h5 class="text-muted">Global Running Balance</h5>
+        <div id="balanceDisplay" class="balance-display text-muted">--</div>
+    </div>
+
+    <div class="card p-4">
+        <div class="row g-3">
+            <div class="col-md-5">
+                <label class="form-label">Date</label>
+                <input type="date" id="dateInput" class="form-control">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label">Hours Worked</label>
+                <input type="number" id="hoursInput" class="form-control" step="0.5" placeholder="8.0">
+            </div>
+            <div class="col-md-3 d-flex align-items-end">
+                <button onclick="addEntry()" class="btn btn-primary w-100">
+                    <i class="fas fa-plus"></i> Add
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="d-flex justify-content-between mb-2">
+        <select id="monthFilter" class="form-select w-auto" onchange="renderTable()">
+            <option value="all">Show All History</option>
+        </select>
+        <button class="btn btn-success btn-sm" onclick="exportToCSV()">
+            <i class="fas fa-file-csv"></i> Export CSV
+        </button>
+    </div>
+
+    <div class="card">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th class="ps-4">Date</th>
+                        <th class="text-center">Worked</th>
+                        <th class="text-center">Variance</th>
+                        <th class="text-end pe-4">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="historyTableBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="settingsModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Cloud Configuration</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Bin ID</label>
+                    <input type="text" id="binIdInput" class="form-control">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">X-Master-Key</label>
+                    <input type="password" id="apiKeyInput" class="form-control">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" onclick="saveSettings()">Save</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+    const STANDARD_HOURS = 8;
+    let localData = []; 
+    let binId = localStorage.getItem("workTracker_binId");
+    let apiKey = localStorage.getItem("workTracker_apiKey");
+    let hasUnsavedChanges = false;
+
+    document.addEventListener("DOMContentLoaded", () => {
+        document.getElementById('dateInput').valueAsDate = new Date();
+        if (!binId || !apiKey) {
+            new bootstrap.Modal(document.getElementById('settingsModal')).show();
+        } else {
+            // We load once on startup so the app isn't empty
+            fetchData();
+        }
+    });
+
+    function markUnsaved(isUnsaved) {
+        hasUnsavedChanges = isUnsaved;
+        const opacity = isUnsaved ? "1" : "0";
+        document.getElementById('unsavedIndicator').style.opacity = opacity;
+        document.getElementById('saveDot').style.opacity = opacity;
+    }
+
+    function saveSettings() {
+        const newBin = document.getElementById('binIdInput').value.trim();
+        const newKey = document.getElementById('apiKeyInput').value.trim();
+        if(newBin && newKey) {
+            localStorage.setItem("workTracker_binId", newBin);
+            localStorage.setItem("workTracker_apiKey", newKey);
+            binId = newBin;
+            apiKey = newKey;
+            bootstrap.Modal.getInstance(document.getElementById('settingsModal')).hide();
+            fetchData();
+        } else {
+            alert("Please fill in both fields.");
+        }
+    }
+
+    function openSettings() {
+        document.getElementById('binIdInput').value = binId || "";
+        document.getElementById('apiKeyInput').value = apiKey || "";
+        new bootstrap.Modal(document.getElementById('settingsModal')).show();
+    }
+
+    async function fetchData() {
+        if(hasUnsavedChanges) {
+            if(!confirm("You have unsaved changes. Loading from cloud will overwrite them. Continue?")) return;
+        }
+
+        toggleLoader(true);
+        try {
+            const response = await fetch(`https://api.jsonbin.io/v3/b/${binId}`, {
+                method: 'GET',
+                headers: { 'X-Master-Key': apiKey }
+            });
+            if (!response.ok) throw new Error("Connection failed");
+            const result = await response.json();
+            localData = result.record || [];
+            markUnsaved(false); // Reset unsaved status
+            updateUI();
+        } catch (error) {
+            alert("Error loading: " + error.message);
+        } finally {
+            toggleLoader(false);
+        }
+    }
+
+    async function syncData() {
+        toggleLoader(true);
+        try {
+            const response = await fetch(`https://api.jsonbin.io/v3/b/${binId}`, {
+                method: 'PUT',
+                headers: { 
+                    'X-Master-Key': apiKey,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(localData)
+            });
+            if (!response.ok) throw new Error("Save failed");
+            
+            markUnsaved(false); // Changes are now saved
+            alert("Saved to cloud successfully!");
+        } catch (error) {
+            alert("Error saving: " + error.message);
+        } finally {
+            toggleLoader(false);
+        }
+    }
+
+    function addEntry() {
+        const dateVal = document.getElementById('dateInput').value;
+        const hoursVal = document.getElementById('hoursInput').value;
+
+        if (!dateVal || !hoursVal) return alert("Missing fields");
+
+        const hours = parseFloat(hoursVal);
+        const variance = hours - STANDARD_HOURS;
+
+        localData.push({ date: dateVal, worked: hours, variance: variance });
+        
+        document.getElementById('hoursInput').value = "";
+        markUnsaved(true); // Flag as unsaved
+        updateUI();
+    }
+
+    function deleteSpecificEntry(entryToDelete) {
+        if (!confirm("Delete this entry?")) return;
+        localData = localData.filter(item => item !== entryToDelete);
+        markUnsaved(true); // Flag as unsaved
+        updateUI();
+    }
+
+    function updateUI() {
+        const total = localData.reduce((sum, item) => sum + item.variance, 0);
+        const disp = document.getElementById('balanceDisplay');
+        disp.innerText = (total > 0 ? "+" : "") + total.toFixed(2) + "h";
+        disp.className = "balance-display " + (total >= 0 ? "text-credit" : "text-debt");
+        updateMonthFilter();
+        renderTable();
+    }
+
+    function updateMonthFilter() {
+        const select = document.getElementById('monthFilter');
+        const currentVal = select.value;
+        const months = [...new Set(localData.map(item => item.date.substring(0, 7)))].sort().reverse();
+        
+        select.innerHTML = '<option value="all">Show All History</option>';
+        months.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m;
+            opt.innerText = m;
+            select.appendChild(opt);
+        });
+        if (months.includes(currentVal)) select.value = currentVal;
+    }
+
+    function renderTable() {
+        const tbody = document.getElementById('historyTableBody');
+        tbody.innerHTML = "";
+        const filterVal = document.getElementById('monthFilter').value;
+        let displayData = [...localData].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        if (filterVal !== "all") {
+            displayData = displayData.filter(item => item.date.startsWith(filterVal));
+        }
+
+        displayData.forEach(entry => {
+            const tr = document.createElement('tr');
+            const badgeClass = entry.variance >= 0 ? "text-success" : "text-danger";
+            const sign = entry.variance > 0 ? "+" : "";
+
+            tr.innerHTML = `
+                <td class="ps-4">${entry.date}</td>
+                <td class="text-center">${entry.worked}</td>
+                <td class="text-center fw-bold ${badgeClass}">${sign}${entry.variance.toFixed(2)}</td>
+                <td class="text-end pe-4">
+                    <button class="btn btn-outline-danger btn-sm rounded-circle">
+                        <i class="fas fa-trash-alt"></i>
+                    </button>
+                </td>
+            `;
+            tr.querySelector('button').onclick = () => deleteSpecificEntry(entry);
+            tbody.appendChild(tr);
+        });
+    }
+
+    function exportToCSV() {
+        if (localData.length === 0) return alert("No data");
+        let csv = "Date,Hours Worked,Variance\n";
+        [...localData].sort((a, b) => new Date(a.date) - new Date(b.date)).forEach(e => {
+            csv += `${e.date},${e.worked},${e.variance}\n`;
+        });
+        const link = document.createElement("a");
+        link.href = "data:text/csv;charset=utf-8," + encodeURI(csv);
+        link.download = "work_history.csv";
+        link.click();
+    }
+
+    function toggleLoader(show) {
+        document.getElementById('loader').style.display = show ? 'flex' : 'none';
+    }
+</script>
+</body>
+</html>
