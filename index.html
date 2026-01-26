@@ -24,6 +24,7 @@
             display: inline-block; margin-left: 5px; opacity: 0; transition: opacity 0.3s;
         }
         .show-unsaved { opacity: 1; }
+        .badge-weekend { background-color: #6c757d; font-size: 0.7em; margin-left: 5px; }
     </style>
 </head>
 <body>
@@ -113,10 +114,17 @@
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Cloud Configuration</h5>
+                <h5 class="modal-title">Configuration</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">Standard Daily Hours (Mon-Fri)</label>
+                    <input type="number" id="stdHoursInput" class="form-control" step="0.1" placeholder="8.0">
+                    <div class="form-text">Weekend work is automatically treated as 100% overtime.</div>
+                </div>
+                <hr>
+                <p class="small text-muted">Cloud Sync Details (JSONBin.io)</p>
                 <div class="mb-3">
                     <label class="form-label">Bin ID</label>
                     <input type="text" id="binIdInput" class="form-control">
@@ -127,7 +135,7 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button type="button" class="btn btn-primary" onclick="saveSettings()">Save</button>
+                <button type="button" class="btn btn-primary" onclick="saveSettings()">Save Configuration</button>
             </div>
         </div>
     </div>
@@ -136,22 +144,27 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 
 <script>
-    const STANDARD_HOURS = 8;
+    // Configuration
     let localData = []; 
     let binId = localStorage.getItem("workTracker_binId");
     let apiKey = localStorage.getItem("workTracker_apiKey");
+    let standardHours = parseFloat(localStorage.getItem("workTracker_stdHours")) || 8.0;
+    
     let hasUnsavedChanges = false;
 
+    // --- INIT ---
     document.addEventListener("DOMContentLoaded", () => {
         document.getElementById('dateInput').valueAsDate = new Date();
+        
+        // If settings missing, open modal
         if (!binId || !apiKey) {
-            new bootstrap.Modal(document.getElementById('settingsModal')).show();
+            openSettings();
         } else {
-            // We load once on startup so the app isn't empty
             fetchData();
         }
     });
 
+    // --- UI HELPERS ---
     function markUnsaved(isUnsaved) {
         hasUnsavedChanges = isUnsaved;
         const opacity = isUnsaved ? "1" : "0";
@@ -159,30 +172,46 @@
         document.getElementById('saveDot').style.opacity = opacity;
     }
 
-    function saveSettings() {
-        const newBin = document.getElementById('binIdInput').value.trim();
-        const newKey = document.getElementById('apiKeyInput').value.trim();
-        if(newBin && newKey) {
-            localStorage.setItem("workTracker_binId", newBin);
-            localStorage.setItem("workTracker_apiKey", newKey);
-            binId = newBin;
-            apiKey = newKey;
-            bootstrap.Modal.getInstance(document.getElementById('settingsModal')).hide();
-            fetchData();
-        } else {
-            alert("Please fill in both fields.");
-        }
+    function toggleLoader(show) {
+        document.getElementById('loader').style.display = show ? 'flex' : 'none';
     }
 
+    // --- SETTINGS ---
     function openSettings() {
         document.getElementById('binIdInput').value = binId || "";
         document.getElementById('apiKeyInput').value = apiKey || "";
+        document.getElementById('stdHoursInput').value = standardHours;
         new bootstrap.Modal(document.getElementById('settingsModal')).show();
     }
 
+    function saveSettings() {
+        const newBin = document.getElementById('binIdInput').value.trim();
+        const newKey = document.getElementById('apiKeyInput').value.trim();
+        const newStd = document.getElementById('stdHoursInput').value;
+
+        if(newBin && newKey && newStd) {
+            localStorage.setItem("workTracker_binId", newBin);
+            localStorage.setItem("workTracker_apiKey", newKey);
+            localStorage.setItem("workTracker_stdHours", newStd);
+            
+            binId = newBin;
+            apiKey = newKey;
+            standardHours = parseFloat(newStd);
+
+            bootstrap.Modal.getInstance(document.getElementById('settingsModal')).hide();
+            // Reload data with new settings? 
+            // Note: Changing standard hours DOES NOT recalculate old entries. 
+            // Old entries keep the variance they had when they were created.
+            fetchData();
+        } else {
+            alert("Please fill in all fields.");
+        }
+    }
+
+    // --- CLOUD SYNC ---
     async function fetchData() {
         if(hasUnsavedChanges) {
-            if(!confirm("You have unsaved changes. Loading from cloud will overwrite them. Continue?")) return;
+            if(!confirm("Unsaved changes will be lost. Continue?")) return;
         }
 
         toggleLoader(true);
@@ -191,10 +220,10 @@
                 method: 'GET',
                 headers: { 'X-Master-Key': apiKey }
             });
-            if (!response.ok) throw new Error("Connection failed");
+            if (!response.ok) throw new Error("Connection failed. Check keys.");
             const result = await response.json();
             localData = result.record || [];
-            markUnsaved(false); // Reset unsaved status
+            markUnsaved(false);
             updateUI();
         } catch (error) {
             alert("Error loading: " + error.message);
@@ -216,7 +245,7 @@
             });
             if (!response.ok) throw new Error("Save failed");
             
-            markUnsaved(false); // Changes are now saved
+            markUnsaved(false);
             alert("Saved to cloud successfully!");
         } catch (error) {
             alert("Error saving: " + error.message);
@@ -225,6 +254,7 @@
         }
     }
 
+    // --- LOGIC ---
     function addEntry() {
         const dateVal = document.getElementById('dateInput').value;
         const hoursVal = document.getElementById('hoursInput').value;
@@ -232,22 +262,45 @@
         if (!dateVal || !hoursVal) return alert("Missing fields");
 
         const hours = parseFloat(hoursVal);
-        const variance = hours - STANDARD_HOURS;
+        
+        // --- NEW WEEKEND LOGIC ---
+        // Create a date object. Note: input is YYYY-MM-DD.
+        const dateObj = new Date(dateVal);
+        const dayOfWeek = dateObj.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+        
+        let targetHours = standardHours;
+        let isWeekend = false;
 
-        localData.push({ date: dateVal, worked: hours, variance: variance });
+        // If Saturday (6) or Sunday (0)
+        if (dayOfWeek === 0 || dayOfWeek === 6) {
+            targetHours = 0; // Weekends: Target is 0, so everything is variance
+            isWeekend = true;
+        }
+
+        const variance = hours - targetHours;
+        // -------------------------
+
+        // We save the 'isWeekend' flag just for display purposes later
+        localData.push({ 
+            date: dateVal, 
+            worked: hours, 
+            variance: variance,
+            weekend: isWeekend 
+        });
         
         document.getElementById('hoursInput').value = "";
-        markUnsaved(true); // Flag as unsaved
+        markUnsaved(true);
         updateUI();
     }
 
     function deleteSpecificEntry(entryToDelete) {
         if (!confirm("Delete this entry?")) return;
         localData = localData.filter(item => item !== entryToDelete);
-        markUnsaved(true); // Flag as unsaved
+        markUnsaved(true);
         updateUI();
     }
 
+    // --- RENDER ---
     function updateUI() {
         const total = localData.reduce((sum, item) => sum + item.variance, 0);
         const disp = document.getElementById('balanceDisplay');
@@ -286,9 +339,22 @@
             const tr = document.createElement('tr');
             const badgeClass = entry.variance >= 0 ? "text-success" : "text-danger";
             const sign = entry.variance > 0 ? "+" : "";
+            
+            // Check if it was marked as weekend, OR calculate it on the fly for old data
+            let isWeekend = entry.weekend;
+            if (isWeekend === undefined) {
+                const d = new Date(entry.date);
+                if (d.getDay() === 0 || d.getDay() === 6) isWeekend = true;
+            }
+
+            const weekendBadge = isWeekend 
+                ? `<span class="badge badge-weekend">WKND</span>` 
+                : "";
 
             tr.innerHTML = `
-                <td class="ps-4">${entry.date}</td>
+                <td class="ps-4">
+                    ${entry.date} ${weekendBadge}
+                </td>
                 <td class="text-center">${entry.worked}</td>
                 <td class="text-center fw-bold ${badgeClass}">${sign}${entry.variance.toFixed(2)}</td>
                 <td class="text-end pe-4">
@@ -304,18 +370,19 @@
 
     function exportToCSV() {
         if (localData.length === 0) return alert("No data");
-        let csv = "Date,Hours Worked,Variance\n";
+        let csv = "Date,Type,Hours Worked,Variance\n";
         [...localData].sort((a, b) => new Date(a.date) - new Date(b.date)).forEach(e => {
-            csv += `${e.date},${e.worked},${e.variance}\n`;
+            // Determine type for CSV
+            let type = "Weekday";
+            const d = new Date(e.date);
+            if (d.getDay() === 0 || d.getDay() === 6) type = "Weekend";
+            
+            csv += `${e.date},${type},${e.worked},${e.variance}\n`;
         });
         const link = document.createElement("a");
         link.href = "data:text/csv;charset=utf-8," + encodeURI(csv);
         link.download = "work_history.csv";
         link.click();
-    }
-
-    function toggleLoader(show) {
-        document.getElementById('loader').style.display = show ? 'flex' : 'none';
     }
 </script>
 </body>
