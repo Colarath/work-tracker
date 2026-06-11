@@ -273,7 +273,9 @@
             });
             if (!response.ok) throw new Error("Save failed");
             markUnsaved(false);
-            alert("Saved to cloud successfully!");
+            if (window.self === window.top) {
+                alert("Saved to cloud successfully!");
+            }
         } catch (error) {
             alert("Error saving: " + error.message);
         } finally {
