@@ -31,6 +31,7 @@
         body.embedded { background-color: transparent; }
         body.embedded .main-container { margin: 15px auto; }
         body.embedded #header-row { display: none !important; }
+        body.embedded #sync-card { display: none !important; }
     </style>
 </head>
 <body>
@@ -50,7 +51,7 @@
         </button>
     </div>
 
-    <div class="card p-3 mb-3">
+    <div id="sync-card" class="card p-3 mb-3">
         <div class="d-flex gap-2 justify-content-between align-items-center">
             <div class="text-muted small">
                 <i class="fas fa-info-circle"></i> Sync manually to save API requests.
