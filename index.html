@@ -26,6 +26,11 @@
         .show-unsaved { opacity: 1; }
         .badge-weekend { background-color: #6c757d; font-size: 0.7em; margin-left: 5px; }
         .comment-text { font-size: 0.85em; color: #6c757d; font-style: italic; display: block; margin-top: 2px;}
+        
+        /* IFrame Embedded Styles */
+        body.embedded { background-color: transparent; }
+        body.embedded .main-container { margin: 15px auto; }
+        body.embedded #header-row { display: none !important; }
     </style>
 </head>
 <body>
@@ -38,7 +43,7 @@
 
 <div class="container main-container">
     
-    <div class="d-flex justify-content-between align-items-center mb-4">
+    <div id="header-row" class="d-flex justify-content-between align-items-center mb-4">
         <h3 class="m-0"><i class="fas fa-clock text-primary"></i> Work Tracker</h3>
         <button class="btn btn-outline-secondary btn-sm" onclick="openSettings()">
             <i class="fas fa-cog"></i> Settings
@@ -159,9 +164,34 @@
 
     // --- INIT ---
     document.addEventListener("DOMContentLoaded", () => {
+        // Embed detection
+        if (window.self !== window.top) {
+            document.body.classList.add('embedded');
+        }
+
         document.getElementById('dateInput').valueAsDate = new Date();
+
+        // Load cached data for instant UI presentation
+        const cached = localStorage.getItem("workTracker_localData");
+        if (cached) {
+            try {
+                localData = JSON.parse(cached);
+                updateUI();
+            } catch (e) {
+                console.error("Failed to parse cached work data", e);
+            }
+        }
+
+        // Re-read storage keys in case they were updated by the parent shell
+        binId = localStorage.getItem("workTracker_binId");
+        apiKey = localStorage.getItem("workTracker_apiKey");
+        standardHours = parseFloat(localStorage.getItem("workTracker_stdHours")) || 8.0;
+
         if (!binId || !apiKey) {
-            openSettings();
+            // Only auto-open settings if not embedded
+            if (window.self === window.top) {
+                openSettings();
+            }
         } else {
             fetchData();
         }
@@ -297,6 +327,9 @@
 
     // --- RENDER ---
     function updateUI() {
+        // Cache data locally for the parent dashboard summary widget
+        localStorage.setItem("workTracker_localData", JSON.stringify(localData));
+
         const total = localData.reduce((sum, item) => sum + item.variance, 0);
         const disp = document.getElementById('balanceDisplay');
         disp.innerText = (total > 0 ? "+" : "") + total.toFixed(2) + "h";
