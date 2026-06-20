@@ -237,6 +237,10 @@
             localStorage.removeItem("gdrive_access_token");
             throw new Error("Google Drive session expired. Please sign in again.");
         }
+        if (response.status === 404) {
+            localStorage.removeItem(`gdrive_fileid_${FILENAME}`);
+            localStorage.removeItem("gdrive_folderid_appdata");
+        }
         if (!response.ok) {
             const errText = await response.text();
             throw new Error(`Google Drive API error: ${response.status} - ${errText}`);
