@@ -33,6 +33,8 @@
         body.embedded #header-row { display: none !important; }
         body.embedded #sync-card { display: none !important; }
     </style>
+    <!-- Google Identity Services -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 
@@ -135,14 +137,15 @@
                     <div class="form-text">Weekend work is automatically treated as 100% overtime.</div>
                 </div>
                 <hr>
-                <p class="small text-muted">Cloud Sync Details (JSONBin.io)</p>
+                <p class="small text-muted">Google Drive Storage Setup</p>
                 <div class="mb-3">
-                    <label class="form-label">Bin ID</label>
-                    <input type="text" id="binIdInput" class="form-control">
+                    <label class="form-label">Google Client ID</label>
+                    <input type="text" id="clientIdInput" class="form-control" placeholder="OAuth 2.0 Web Client ID">
                 </div>
-                <div class="mb-3">
-                    <label class="form-label">X-Master-Key</label>
-                    <input type="password" id="apiKeyInput" class="form-control">
+                <div class="d-grid mb-2">
+                    <button id="btn-work-signin" class="btn btn-outline-danger btn-sm" onclick="workInitiateSignIn()">
+                        <i class="fab fa-google me-2"></i> Connect Google Drive
+                    </button>
                 </div>
             </div>
             <div class="modal-footer">
@@ -157,11 +160,9 @@
 <script>
     // Configuration
     let localData = []; 
-    let binId = localStorage.getItem("workTracker_binId");
-    let apiKey = localStorage.getItem("workTracker_apiKey");
     let standardHours = parseFloat(localStorage.getItem("workTracker_stdHours")) || 8.0;
-    
     let hasUnsavedChanges = false;
+    const FILENAME = "work_tracker_data.json";
 
     // --- INIT ---
     document.addEventListener("DOMContentLoaded", () => {
@@ -183,18 +184,15 @@
             }
         }
 
-        // Re-read storage keys in case they were updated by the parent shell
-        binId = localStorage.getItem("workTracker_binId");
-        apiKey = localStorage.getItem("workTracker_apiKey");
         standardHours = parseFloat(localStorage.getItem("workTracker_stdHours")) || 8.0;
 
-        if (!binId || !apiKey) {
-            // Only auto-open settings if not embedded
+        // Auto fetch on load if authorized
+        if (hasValidGDriveToken()) {
+            fetchData();
+        } else {
             if (window.self === window.top) {
                 openSettings();
             }
-        } else {
-            fetchData();
         }
     });
 
@@ -210,30 +208,180 @@
         document.getElementById('loader').style.display = show ? 'flex' : 'none';
     }
 
+    // --- GOOGLE DRIVE STORAGE INTEGRATION ---
+    function hasValidGDriveToken() {
+        const token = localStorage.getItem("gdrive_access_token");
+        const expires = localStorage.getItem("gdrive_token_expires_at");
+        return token && expires && Date.now() < parseInt(expires);
+    }
+
+    function getAccessToken() {
+        const token = localStorage.getItem("gdrive_access_token");
+        const expiresAt = localStorage.getItem("gdrive_token_expires_at");
+        if (token && expiresAt && Date.now() < parseInt(expiresAt)) {
+            return token;
+        }
+        return null;
+    }
+
+    async function gdriveRequest(url, options = {}) {
+        const token = getAccessToken();
+        if (!token) {
+            throw new Error("Unauthorized: Please sign in to Google Drive in the Dashboard Settings.");
+        }
+        options.headers = options.headers || {};
+        options.headers["Authorization"] = `Bearer ${token}`;
+        
+        const response = await fetch(url, options);
+        if (response.status === 401) {
+            localStorage.removeItem("gdrive_access_token");
+            throw new Error("Google Drive session expired. Please sign in again.");
+        }
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`Google Drive API error: ${response.status} - ${errText}`);
+        }
+        return response;
+    }
+
+    async function getAppDataFolderId() {
+        const cachedFolderId = localStorage.getItem("gdrive_folderid_appdata");
+        if (cachedFolderId) return cachedFolderId;
+
+        const url = `https://www.googleapis.com/drive/v3/files?q=name='App+Data'+and+mimeType='application/vnd.google-apps.folder'+and+trashed=false&fields=files(id)`;
+        const response = await gdriveRequest(url);
+        const data = await response.json();
+        
+        if (data.files && data.files.length > 0) {
+            const folderId = data.files[0].id;
+            localStorage.setItem("gdrive_folderid_appdata", folderId);
+            return folderId;
+        }
+        
+        const createUrl = "https://www.googleapis.com/drive/v3/files";
+        const createResponse = await gdriveRequest(createUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                name: "App Data",
+                mimeType: "application/vnd.google-apps.folder"
+            })
+        });
+        const folderData = await createResponse.json();
+        localStorage.setItem("gdrive_folderid_appdata", folderData.id);
+        return folderData.id;
+    }
+
+    async function getFileId(filename, defaultContent = "[]") {
+        const cachedFileId = localStorage.getItem(`gdrive_fileid_${filename}`);
+        if (cachedFileId) return cachedFileId;
+
+        const folderId = await getAppDataFolderId();
+        
+        const url = `https://www.googleapis.com/drive/v3/files?q=name='${filename}'+and+'${folderId}'+in+parents+and+trashed=false&fields=files(id)`;
+        const response = await gdriveRequest(url);
+        const data = await response.json();
+
+        if (data.files && data.files.length > 0) {
+            const fileId = data.files[0].id;
+            localStorage.setItem(`gdrive_fileid_${filename}`, fileId);
+            return fileId;
+        }
+
+        const metadata = {
+            name: filename,
+            mimeType: "application/json",
+            parents: [folderId]
+        };
+
+        const boundary = "gdrive_multipart_boundary";
+        const delimiter = `\r\n--${boundary}\r\n`;
+        const closeDelimiter = `\r\n--${boundary}--`;
+
+        const body = 
+            delimiter +
+            'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+            JSON.stringify(metadata) +
+            delimiter +
+            'Content-Type: application/json\r\n\r\n' +
+            defaultContent +
+            closeDelimiter;
+
+        const uploadUrl = "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
+        const uploadResponse = await gdriveRequest(uploadUrl, {
+            method: "POST",
+            headers: {
+                "Content-Type": `multipart/related; boundary=${boundary}`
+            },
+            body: body
+        });
+        const uploadData = await uploadResponse.json();
+        localStorage.setItem(`gdrive_fileid_${filename}`, uploadData.id);
+        return uploadData.id;
+    }
+
     // --- SETTINGS ---
     function openSettings() {
-        document.getElementById('binIdInput').value = binId || "";
-        document.getElementById('apiKeyInput').value = apiKey || "";
+        const cliId = localStorage.getItem("gdrive_clientId") || "";
+        document.getElementById('clientIdInput').value = cliId;
         document.getElementById('stdHoursInput').value = standardHours;
+        
+        const signInBtn = document.getElementById("btn-work-signin");
+        if (hasValidGDriveToken()) {
+            signInBtn.innerText = "Google Drive Connected";
+            signInBtn.className = "btn btn-outline-success btn-sm";
+        } else {
+            signInBtn.innerText = "Connect Google Drive";
+            signInBtn.className = "btn btn-outline-danger btn-sm";
+        }
+
         new bootstrap.Modal(document.getElementById('settingsModal')).show();
     }
 
-    function saveSettings() {
-        const newBin = document.getElementById('binIdInput').value.trim();
-        const newKey = document.getElementById('apiKeyInput').value.trim();
-        const newStd = document.getElementById('stdHoursInput').value;
+    function workInitiateSignIn() {
+        const cliId = document.getElementById('clientIdInput').value.trim();
+        if (!cliId) return alert("Please enter a Client ID");
+        
+        localStorage.setItem("gdrive_clientId", cliId);
 
-        if(newBin && newKey && newStd) {
-            localStorage.setItem("workTracker_binId", newBin);
-            localStorage.setItem("workTracker_apiKey", newKey);
+        try {
+            const client = google.accounts.oauth2.initTokenClient({
+                client_id: cliId,
+                scope: 'https://www.googleapis.com/auth/drive.file',
+                callback: (response) => {
+                    if (response.error !== undefined) {
+                        alert("Google login failed: " + response.error);
+                        return;
+                    }
+                    const expiresAt = Date.now() + (response.expires_in * 1000);
+                    localStorage.setItem("gdrive_access_token", response.access_token);
+                    localStorage.setItem("gdrive_token_expires_at", expiresAt);
+                    alert("Connected to Google Drive!");
+                    openSettings(); // Refresh view
+                    fetchData();
+                }
+            });
+            client.requestAccessToken({ prompt: 'consent' });
+        } catch (e) {
+            console.error(e);
+            alert("Could not load Google authentication");
+        }
+    }
+
+    function saveSettings() {
+        const newStd = document.getElementById('stdHoursInput').value;
+        const cliId = document.getElementById('clientIdInput').value.trim();
+
+        if(newStd) {
             localStorage.setItem("workTracker_stdHours", newStd);
-            binId = newBin;
-            apiKey = newKey;
+            localStorage.setItem("gdrive_clientId", cliId);
             standardHours = parseFloat(newStd);
             bootstrap.Modal.getInstance(document.getElementById('settingsModal')).hide();
-            fetchData();
+            if (hasValidGDriveToken()) {
+                fetchData();
+            }
         } else {
-            alert("Please fill in all fields.");
+            alert("Please enter standard daily hours.");
         }
     }
 
@@ -244,17 +392,15 @@
         }
         toggleLoader(true);
         try {
-            const response = await fetch(`https://api.jsonbin.io/v3/b/${binId}`, {
-                method: 'GET',
-                headers: { 'X-Master-Key': apiKey }
-            });
-            if (!response.ok) throw new Error("Connection failed. Check keys.");
-            const result = await response.json();
-            localData = result.record || [];
+            const fileId = await getFileId(FILENAME);
+            const response = await gdriveRequest(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+            const data = await response.json();
+            localData = Array.isArray(data) ? data : [];
             markUnsaved(false);
             updateUI();
         } catch (error) {
             alert("Error loading: " + error.message);
+            throw error;
         } finally {
             toggleLoader(false);
         }
@@ -263,21 +409,19 @@
     async function syncData() {
         toggleLoader(true);
         try {
-            const response = await fetch(`https://api.jsonbin.io/v3/b/${binId}`, {
-                method: 'PUT',
-                headers: { 
-                    'X-Master-Key': apiKey,
-                    'Content-Type': 'application/json'
-                },
+            const fileId = await getFileId(FILENAME);
+            await gdriveRequest(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(localData)
             });
-            if (!response.ok) throw new Error("Save failed");
             markUnsaved(false);
             if (window.self === window.top) {
                 alert("Saved to cloud successfully!");
             }
         } catch (error) {
             alert("Error saving: " + error.message);
+            throw error;
         } finally {
             toggleLoader(false);
         }
